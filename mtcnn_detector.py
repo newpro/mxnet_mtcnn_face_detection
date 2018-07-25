@@ -52,7 +52,7 @@ class MtcnnDetector(object):
 
         # load 4 models from folder
         models = ['det1', 'det2', 'det3', 'det4']
-        models = [ os.path.join(model_folder, f) for f in models]
+        models = [os.path.join(model_folder, f) for f in models]
         
         self.PNets = []
         for i in range(num_worker):
