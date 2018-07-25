@@ -6,7 +6,12 @@ import math
 import cv2
 from multiprocessing import Pool
 from itertools import repeat
-from itertools import izip
+try:
+    # Python 2
+    from itertools import izip
+except ImportError:
+    # Python 3
+    izip = zip
 from helper import nms, adjust_input, generate_bbox, detect_first_stage_warpper
 
 class MtcnnDetector(object):
@@ -17,11 +22,11 @@ class MtcnnDetector(object):
     """
     def __init__(self,
                  model_folder='.',
-                 minsize = 20,
-                 threshold = [0.6, 0.7, 0.8],
-                 factor = 0.709,
-                 num_worker = 1,
-                 accurate_landmark = False,
+                 minsize=20,
+                 threshold=[0.6, 0.7, 0.8],
+                 factor=0.709,
+                 num_worker=1,
+                 accurate_landmark=False,
                  ctx=mx.cpu()):
         """
             Initialize the detector
@@ -46,7 +51,7 @@ class MtcnnDetector(object):
         self.accurate_landmark = accurate_landmark
 
         # load 4 models from folder
-        models = ['det1', 'det2', 'det3','det4']
+        models = ['det1', 'det2', 'det3', 'det4']
         models = [ os.path.join(model_folder, f) for f in models]
         
         self.PNets = []
@@ -60,10 +65,9 @@ class MtcnnDetector(object):
         self.ONet = mx.model.FeedForward.load(models[2], 1, ctx=ctx)
         self.LNet = mx.model.FeedForward.load(models[3], 1, ctx=ctx)
 
-        self.minsize   = float(minsize)
-        self.factor    = float(factor)
+        self.minsize = float(minsize)
+        self.factor = float(factor)
         self.threshold = threshold
-
 
     def convert_to_square(self, bbox):
         """
@@ -114,7 +118,6 @@ class MtcnnDetector(object):
         bbox[:, 0:4] = bbox[:, 0:4] + aug
         return bbox
 
- 
     def pad(self, bboxes, w, h):
         """
             pad the the bboxes, alse restrict the size of it
@@ -127,7 +130,7 @@ class MtcnnDetector(object):
                 width of the input image
             h: float number
                 height of the input image
-        Returns :
+        Returns:
         ------s
             dy, dx : numpy array, n x 1
                 start point of the bbox in target image
@@ -139,13 +142,12 @@ class MtcnnDetector(object):
                 end point of the bbox in original image
             tmph, tmpw: numpy array, n x 1
                 height and width of the bbox
-
         """
         tmpw, tmph = bboxes[:, 2] - bboxes[:, 0] + 1,  bboxes[:, 3] - bboxes[:, 1] + 1
         num_box = bboxes.shape[0]
 
-        dx , dy= np.zeros((num_box, )), np.zeros((num_box, ))
-        edx, edy  = tmpw.copy()-1, tmph.copy()-1
+        dx, dy = np.zeros((num_box, )), np.zeros((num_box, ))
+        edx, edy = tmpw.copy()-1, tmph.copy()-1
 
         x, y, ex, ey = bboxes[:, 0], bboxes[:, 1], bboxes[:, 2], bboxes[:, 3]
 
@@ -168,7 +170,7 @@ class MtcnnDetector(object):
         return_list = [dy, edy, dx, edx, y, ey, x, ex, tmpw, tmph]
         return_list = [item.astype(np.int32) for item in return_list]
 
-        return  return_list
+        return return_list
 
     def slice_index(self, number):
         """
@@ -184,7 +186,6 @@ class MtcnnDetector(object):
                 yield l[i:i + n]
         num_list = range(number)
         return list(chunks(num_list, self.num_worker))
-        
 
     def detect_face(self, img):
         """
@@ -193,14 +194,13 @@ class MtcnnDetector(object):
         ----------
             img: numpy array, bgr order of shape (1, 3, n, m)
                 input image
-        Retures:
+        Returns:
         -------
             bboxes: numpy array, n x 5 (x1,y2,x2,y2,score)
                 bboxes
             points: numpy array, n x 10 (x1, x2 ... x5, y1, y2 ..y5)
                 landmarks
         """
-
         # check input
         MIN_DET_SIZE = 12
 
@@ -215,7 +215,7 @@ class MtcnnDetector(object):
         total_boxes = []
 
         height, width, _ = img.shape
-        minl = min( height, width)
+        minl = min(height, width)
 
         # get all the valid scales
         scales = []
@@ -230,7 +230,7 @@ class MtcnnDetector(object):
         #############################################
         # first stage
         #############################################
-        #for scale in scales:
+        # for scale in scales:
         #    return_boxes = self.detect_first_stage(img, scale, 0)
         #    if return_boxes is not None:
         #        total_boxes.append(return_boxes)
@@ -396,7 +396,7 @@ class MtcnnDetector(object):
         ----------
             pts_list:
                 input list
-        Retures:
+        Returns:
         -------
             colMat: 
 
@@ -416,7 +416,7 @@ class MtcnnDetector(object):
         ----------
             from_shape: 
             to_shape: 
-        Retures:
+        Returns:
         -------
             tran_m:
             tran_b:
@@ -428,8 +428,8 @@ class MtcnnDetector(object):
         cov = np.matrix([[0.0, 0.0], [0.0, 0.0]])
 
         # compute the mean and cov
-        from_shape_points = from_shape.reshape(from_shape.shape[0]/2, 2)
-        to_shape_points = to_shape.reshape(to_shape.shape[0]/2, 2)
+        from_shape_points = from_shape.reshape(from_shape.shape[0]//2, 2)
+        to_shape_points = to_shape.reshape(to_shape.shape[0]//2, 2)
         mean_from = from_shape_points.mean(axis=0)
         mean_to = to_shape_points.mean(axis=0)
 
@@ -473,15 +473,15 @@ class MtcnnDetector(object):
             points: numpy array, n x 10 (x1, x2 ... x5, y1, y2 ..y5)
             desired_size: default 256
             padding: default 0
-        Retures:
+        Returns:
         -------
             crop_imgs: list, n
                 cropped and aligned faces 
         """
         crop_imgs = []
         for p in points:
-            shape  =[]
-            for k in range(len(p)/2):
+            shape =[]
+            for k in range(len(p)//2):
                 shape.append(p[k])
                 shape.append(p[k+5])
 
@@ -496,7 +496,7 @@ class MtcnnDetector(object):
             from_points = []
             to_points = []
 
-            for i in range(len(shape)/2):
+            for i in range(len(shape)//2):
                 x = (padding + mean_face_shape_x[i]) / (2 * padding + 1) * desired_size
                 y = (padding + mean_face_shape_y[i]) / (2 * padding + 1) * desired_size
                 to_points.append([x, y])
@@ -506,7 +506,7 @@ class MtcnnDetector(object):
             from_mat = self.list2colmatrix(from_points)
             to_mat = self.list2colmatrix(to_points)
 
-            # compute the similar transfrom
+            # compute the similar transform
             tran_m, tran_b = self.find_tfrom_between_shapes(from_mat, to_mat)
 
             probe_vec = np.matrix([1.0, 0.0]).transpose()
