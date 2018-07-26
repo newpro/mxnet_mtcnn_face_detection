@@ -86,7 +86,7 @@ class MtcnnDetector(object):
 
         h = bbox[:, 3] - bbox[:, 1] + 1
         w = bbox[:, 2] - bbox[:, 0] + 1
-        max_side = np.maximum(h,w)
+        max_side = np.maximum(h, w)
         square_bbox[:, 0] = bbox[:, 0] + w*0.5 - max_side*0.5
         square_bbox[:, 1] = bbox[:, 1] + h*0.5 - max_side*0.5
         square_bbox[:, 2] = square_bbox[:, 0] + max_side - 1
@@ -131,7 +131,7 @@ class MtcnnDetector(object):
             h: float number
                 height of the input image
         Returns:
-        ------s
+        ------
             dy, dx : numpy array, n x 1
                 start point of the bbox in target image
             edy, edx : numpy array, n x 1
@@ -238,12 +238,13 @@ class MtcnnDetector(object):
         sliced_index = self.slice_index(len(scales))
         total_boxes = []
         for batch in sliced_index:
-            local_boxes = self.Pool.map( detect_first_stage_warpper, \
-                    izip(repeat(img), self.PNets[:len(batch)], [scales[i] for i in batch], repeat(self.threshold[0])) )
+            local_boxes = self.Pool.map(detect_first_stage_warpper,
+                                        izip(repeat(img), self.PNets[:len(batch)],
+                                             [scales[i] for i in batch], repeat(self.threshold[0])))
             total_boxes.extend(local_boxes)
         
         # remove the Nones 
-        total_boxes = [ i for i in total_boxes if i is not None]
+        total_boxes = [i for i in total_boxes if i is not None]
 
         if len(total_boxes) == 0:
             return None
