@@ -60,7 +60,7 @@ def big_ass_warning(line):
 
 
 class Filter:
-    def __init__(self, img_path, log_path, purges=True):
+    def __init__(self, img_path, log_path, meta_path, purges=True):
         self.detector = MtcnnDetector(model_folder='model', ctx=mx.gpu(0), num_worker=4, accurate_landmark=False)
         self.img_path = img_path
         self.success_logs_path = os.path.join(log_path, 'successes/')
@@ -73,13 +73,47 @@ class Filter:
         self.b_log = os.path.join(data_log, 'b/')  # bbox
         self.p_log = os.path.join(data_log, 'p/')  # facial points
         self.save_path = os.path.join(log_path, 'imgs/')
+        # meta
+        self.meta_path = meta_path
+        self.meta_records = os.path.join(meta_path, 'records/')
+        self.meta_rois = os.path.join(meta_path, 'rois/')
+        if os.path.isdir(self.meta_records) and os.path.isdir(self.meta_rois): # validate file structure
+            pass
+        else:
+            raise Exception('meta record broken.')
+        # reset logs
         if purges:
             _purge(self.save_path, 'path')
             _purge(self.file_log, 'path')
             _purge(self.b_log, 'path')
             _purge(self.p_log, 'path')
 
-    def _detect_img(self, img_path, img_id, save_paths, file_log, b_log, p_log, min_resolution=24):
+    def _intersect_ratio(self, box, rois):
+        """Calculate max intersect ratio between a box and list of candidate, ratio relative to the box.
+        E.g: area(overlap) / area(box)
+        Note: https://stackoverflow.com/questions/27152904
+
+        :param box: tuple, format: x, y, w, h.
+        :param rois: list, a list of rois. Same format as box.
+        :return: float, a number between 0 and 1.
+        """
+        max_ = 0
+        box_area = (box[2] - box[0]) * (box[3] - box[1])
+        if box_area == 0:
+            return 0
+        for roi in rois:
+            dx = min(roi[2], box[2]) - max(roi[0], box[0])
+            dy = min(roi[3], box[3]) - max(roi[1], box[1])
+            if (dx >= 0) and (dy >= 0):
+                max_ = max(max_, ((dx*dy) / box_area))
+        if max_ < 0 or max_ > 1:
+            raise Exception('Implementation or data error, max out of bound: {}'.format(max_))
+        return max_
+
+    def _detect_img(self, img_path, img_id, save_paths,
+                    file_log, b_log, p_log, rejection_log,
+                    rois,
+                    min_confidence=0.9, min_resolution=24):
         print('Detecting:', img_path)
         img = cv2.imread(img_path)
         # run detector
@@ -89,13 +123,19 @@ class Filter:
         points = []
         if results is not None:
             for i, b in enumerate(results[0]):
-                if (b[2]-b[0] >= min_resolution) and (b[3]-b[1] >= min_resolution):
+                # check resolution, confidence, and intersect ratio to rcnn meta.
+                if (b[2]-b[0] >= min_resolution) and (b[3]-b[1] >= min_resolution) and \
+                        (b[4] >= min_confidence) and \
+                        (self._intersect_ratio(b, rois) >= 0.7):
                     total_boxes.append(b)
                     points.append(results[1][i])
-            # total_boxes = results[0]
-            # points = results[1]
+                else:  # rejected by filter
+                    # write format: img_id, x1, y1, x2, y2, confidence.
+                    _log_one_line(rejection_log, '{} {} {} {} {} {}'.format(img_id,
+                                                                            b[0], b[1], b[2], b[3],
+                                                                            b[4]))
         if (results is None) or (len(total_boxes) == 0):
-            _log_one_line(file_log, '0 {}'.format(img_id))
+            _log_one_line(file_log, '{} 0'.format(img_id))
             return
 
         # extract aligned face chips
@@ -108,15 +148,19 @@ class Filter:
             save_path = save_paths[1]
         else:
             save_path = save_paths[2]
-        for i, chip in enumerate(chips):
-            cv2.imwrite(os.path.join(save_path, '{}_{}.jpg'.format(img_id, i)), chip)
-        _log_one_line(file_log, '{} {}'.format(len(chips), img_id))
+        for ind, chip in enumerate(chips):
+            cv2.imwrite(os.path.join(save_path, '{}_{}.jpg'.format(img_id, ind)), chip)
+        _log_one_line(file_log, '{} {}'.format(img_id, len(chips)))
         # write boxes
-        for b in total_boxes:
-            _log_one_line(b_log, '{} {} {} {}'.format(int(b[0]), int(b[1]), int(b[2]), int(b[3])))
-        for pc, p in enumerate(points):
+        for ind, b in enumerate(total_boxes):
+            # write format: img_id, x1, y1, x2, y2, confidence.
+            _log_one_line(b_log, '{} {} {} {} {} {} {}'.format(img_id, ind,
+                                                               b[0], b[1], b[2], b[3],
+                                                               b[4]))
+        for ind, p in enumerate(points):
             for i in range(5):
-                _log_one_line(p_log, '{} {} {} {}'.format(pc, i, p[i], p[i+5]))
+                # write format: img_id
+                _log_one_line(p_log, '{} {} {} {} {}'.format(img_id, ind, i, p[i], p[i+5]))
 
     def write_all(self):
         # some extra logging info
@@ -124,14 +168,32 @@ class Filter:
         _count = 0
         for folder in self.folders:
             category_id = folder.split('/')[-1]
-            big_ass_warning('CATEGORY: {}, PROGRESS: {}%'.format(category_id, int(float(_count)*100/_total)))
+            big_ass_warning('CATEGORY: {}, PROGRESS: {:.2f}%'.format(category_id, float(_count)*100/_total))
+            # load meta
+            with open(os.path.join(self.meta_rois, '{}.txt'.format(category_id))) as f:
+                _lines = f.readlines()
+            records = {}  # meta key: image_id, value: roi
+            for line in _lines:
+                _raw = line.strip().split()
+                assert(len(_raw) == 6)
+                _img_id = _raw[0]
+                roi = [int(_raw[2]),
+                       int(_raw[3]),
+                       int(_raw[4]) + int(_raw[2]),
+                       int(_raw[5]) + int(_raw[3]), ]  # x1, y1, x2, y2
+                if _img_id in records:
+                    records[_img_id].append(roi)
+                else:
+                    records[_img_id] = [roi]
             # build log system
             file_log = os.path.join(self.file_log, '{}.txt'.format(category_id))
             _purge(file_log, 'file')
-            c_b_log = os.path.join(self.b_log, '{}/'.format(category_id))
-            _purge(c_b_log, 'path')
-            c_p_log = os.path.join(self.p_log, '{}/'.format(category_id))
-            _purge(c_p_log, 'path')
+            c_b_log = os.path.join(self.b_log, '{}.txt'.format(category_id))
+            _purge(c_b_log, 'file')
+            c_p_log = os.path.join(self.p_log, '{}.txt'.format(category_id))
+            _purge(c_p_log, 'file')
+            c_rj_log = os.path.join(self.b_log, 'r{}.txt'.format(category_id))
+            _purge(c_rj_log, 'file')
             save_path = os.path.join(self.save_path, '{}/'.format(category_id))
             _purge(save_path, 'path')
             save_paths = []
@@ -144,20 +206,22 @@ class Filter:
                 if file.endswith(".jpg"):
                     _path = os.path.join(folder, file)
                     img_id = str(int(file.split('/')[-1].split('.')[0])).zfill(6)
-                    _b_log = os.path.join(c_b_log, '{}.txt'.format(img_id))
-                    _purge(_b_log, 'file')
-                    _p_log = os.path.join(c_p_log, '{}.txt'.format(img_id))
-                    _purge(_p_log, 'file')
+                    if not (img_id in records):  # zero person in image, based on meta data
+                        continue
+                    rois = records[img_id]
                     self._detect_img(img_path=_path,
                                      img_id=img_id,
                                      save_paths=save_paths,
                                      file_log=file_log,
-                                     b_log=_b_log,
-                                     p_log=_p_log)
+                                     b_log=c_b_log,
+                                     p_log=c_p_log,
+                                     rejection_log=c_rj_log,
+                                     rois=rois)
             _count += 1
 
 
 if __name__ == "__main__":
     f = Filter(img_path='/home/kits-adm/Datasets/flickr_epa/pics/',
+               meta_path='/home/kits-adm/Datasets/flickr_epa/filters/',
                log_path=PURGE_SAFE)
     f.write_all()
