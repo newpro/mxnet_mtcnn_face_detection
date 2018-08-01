@@ -170,7 +170,10 @@ class Filter:
             category_id = folder.split('/')[-1]
             big_ass_warning('CATEGORY: {}, PROGRESS: {:.2f}%'.format(category_id, float(_count)*100/_total))
             # load meta
-            with open(os.path.join(self.meta_rois, '{}.txt'.format(category_id))) as f:
+            _meta_path = os.path.join(self.meta_rois, '{}.txt'.format(category_id))
+            if not os.path.isfile(_meta_path):  # meta may not be there due to no person in category.
+                continue
+            with open(_meta_path) as f:
                 _lines = f.readlines()
             records = {}  # meta key: image_id, value: roi
             for line in _lines:
