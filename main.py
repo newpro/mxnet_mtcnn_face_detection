@@ -5,8 +5,12 @@ import cv2
 import os
 import shutil
 from glob import glob
+import multiprocessing
 
 PURGE_SAFE = '/home/kits-adm/Datasets/flickr_epa/faces/'
+# worker used in first stage.
+# Note: this also depend on your GPU power, if you run out of GPU memory (CUDA error), reduce this.
+WORKER_COUNT = int(multiprocessing.cpu_count() / 2) - 2
 
 
 # borrowed functions, erase when merge
@@ -61,7 +65,10 @@ def big_ass_warning(line):
 
 class Filter:
     def __init__(self, img_path, log_path, meta_path, purges=True):
-        self.detector = MtcnnDetector(model_folder='model', ctx=mx.gpu(0), num_worker=4, accurate_landmark=False)
+        self.detector = MtcnnDetector(model_folder='model',
+                                      ctx=mx.gpu(0),
+                                      num_worker=WORKER_COUNT,
+                                      accurate_landmark=False)
         self.img_path = img_path
         self.success_logs_path = os.path.join(log_path, 'successes/')
         self.folders = [x for x in glob(img_path + "*")]
