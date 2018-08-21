@@ -7,7 +7,8 @@ import shutil
 from glob import glob
 import multiprocessing
 
-PURGE_SAFE = '/home/kits-adm/Datasets/flickr_epa/faces/'
+BASE_PATH = '/home/kits-adm/Datasets/flickr_modifiers/'
+PURGE_SAFE = os.path.join(BASE_PATH, 'faces/')
 # worker used in first stage.
 # Note: this also depend on your GPU power, if you run out of GPU memory (CUDA error), reduce this.
 WORKER_COUNT = int(multiprocessing.cpu_count() / 2) - 2
@@ -64,7 +65,7 @@ def big_ass_warning(line):
 
 
 class Filter:
-    def __init__(self, img_path, log_path, meta_path, purges=True):
+    def __init__(self, img_path, log_path, meta_path, purges=True, only_one=False):
         self.detector = MtcnnDetector(model_folder='model',
                                       ctx=mx.gpu(0),
                                       num_worker=WORKER_COUNT,
@@ -84,7 +85,8 @@ class Filter:
         self.meta_path = meta_path
         self.meta_records = os.path.join(meta_path, 'records/')
         self.meta_rois = os.path.join(meta_path, 'rois/')
-        if os.path.isdir(self.meta_records) and os.path.isdir(self.meta_rois): # validate file structure
+        self.only_one_mode = only_one
+        if os.path.isdir(self.meta_records) and os.path.isdir(self.meta_rois):  # validate file structure
             pass
         else:
             raise Exception('meta record broken.')
@@ -104,18 +106,22 @@ class Filter:
         :param rois: list, a list of rois. Same format as box.
         :return: float, a number between 0 and 1.
         """
-        max_ = 0
+        res = 0
+        assert(box[2] >= box[0])
+        assert(box[3] >= box[1])
         box_area = (box[2] - box[0]) * (box[3] - box[1])
         if box_area == 0:
             return 0
         for roi in rois:
+            assert(roi[2] >= roi[0])
+            assert(roi[3] >= roi[1])
             dx = min(roi[2], box[2]) - max(roi[0], box[0])
             dy = min(roi[3], box[3]) - max(roi[1], box[1])
             if (dx >= 0) and (dy >= 0):
-                max_ = max(max_, ((dx*dy) / box_area))
-        if max_ < 0 or max_ > 1:
-            raise Exception('Implementation or data error, max out of bound: {}'.format(max_))
-        return max_
+                res = ((dx*dy) / box_area)
+        assert (res >= 0)
+        assert (res <= 1)
+        return res
 
     def _detect_img(self, img_path, img_id, save_paths,
                     file_log, b_log, p_log, rejection_log,
@@ -137,10 +143,9 @@ class Filter:
                     total_boxes.append(b)
                     points.append(results[1][i])
                 else:  # rejected by filter
-                    # write format: img_id, x1, y1, x2, y2, confidence.
-                    _log_one_line(rejection_log, '{} {} {} {} {} {}'.format(img_id,
-                                                                            b[0], b[1], b[2], b[3],
-                                                                            b[4]))
+                    # write format: img_id, rejection code(Fail on filter: F),  x1, y1, x2, y2, confidence.
+                    _log_one_line(rejection_log, '{} {} {} {} {} {} {}'.format(img_id, 'F',
+                                                                               b[0], b[1], b[2], b[3], b[4]))
         if (results is None) or (len(total_boxes) == 0):
             _log_one_line(file_log, '{} 0'.format(img_id))
             return
@@ -148,16 +153,30 @@ class Filter:
         # extract aligned face chips
         chips = self.detector.extract_image_chips(img, points, 144, 0.37)
         face_num = len(chips)
-        assert(len(save_paths) == 3)
-        if face_num == 1:
+        _log_one_line(file_log, '{} {}'.format(img_id, face_num))
+        if self.only_one_mode:
+            # more than one face
+            if face_num != 1:
+                # Log as failures and record no image for this file.
+                # Note: due to we have much data and want to reduce noise as much as possible
+                # record less noise is more important than record more data.
+                for i, b in enumerate(results[0]):
+                    # log as failure code M
+                    _log_one_line(rejection_log, '{} {} {} {} {} {} {}'.format(img_id, 'M',
+                                                                               b[0], b[1], b[2], b[3], b[4]))
+                return  # end operation
             save_path = save_paths[0]
-        elif face_num == 2:
-            save_path = save_paths[1]
+            cv2.imwrite(os.path.join(save_path, '{}.jpg'.format(img_id)), chips[0])
         else:
-            save_path = save_paths[2]
-        for ind, chip in enumerate(chips):
-            cv2.imwrite(os.path.join(save_path, '{}_{}.jpg'.format(img_id, ind)), chip)
-        _log_one_line(file_log, '{} {}'.format(img_id, len(chips)))
+            assert(len(save_paths) == 3)
+            if face_num == 1:
+                save_path = save_paths[0]
+            elif face_num == 2:
+                save_path = save_paths[1]
+            else:
+                save_path = save_paths[2]
+            for ind, chip in enumerate(chips):
+                cv2.imwrite(os.path.join(save_path, '{}_{}.jpg'.format(img_id, ind)), chip)
         # write boxes
         for ind, b in enumerate(total_boxes):
             # write format: img_id, x1, y1, x2, y2, confidence.
@@ -175,13 +194,13 @@ class Filter:
         _count = 0
         for folder in self.folders:
             category_id = folder.split('/')[-1]
-            big_ass_warning('CATEGORY: {}, PROGRESS: {:.2f}%'.format(category_id, float(_count)*100/_total))
+            big_ass_warning('CATEGORY: {}, PROGRESS: {:.4f}%'.format(category_id, float(_count)*100/_total))
             # load meta
             _meta_path = os.path.join(self.meta_rois, '{}.txt'.format(category_id))
             if not os.path.isfile(_meta_path):  # meta may not be there due to no person in category.
                 continue
-            with open(_meta_path) as f:
-                _lines = f.readlines()
+            with open(_meta_path) as _f:
+                _lines = _f.readlines()
             records = {}  # meta key: image_id, value: roi
             for line in _lines:
                 _raw = line.strip().split()
@@ -207,10 +226,13 @@ class Filter:
             save_path = os.path.join(self.save_path, '{}/'.format(category_id))
             _purge(save_path, 'path')
             save_paths = []
-            for i in range(3):  # three tiers for ppl number.
-                p = os.path.join(save_path, '{}/'.format((i+1),))
-                _purge(p, 'path')
-                save_paths.append(p)
+            if self.only_one_mode:
+                save_paths = [save_path]
+            else:
+                for i in range(3):  # three tiers for ppl number.
+                    p = os.path.join(save_path, '{}/'.format((i+1),))
+                    _purge(p, 'path')
+                    save_paths.append(p)
             # write data
             for file in os.listdir(folder):
                 if file.endswith(".jpg"):
@@ -219,19 +241,24 @@ class Filter:
                     if not (img_id in records):  # zero person in image, based on meta data
                         continue
                     rois = records[img_id]
-                    self._detect_img(img_path=_path,
-                                     img_id=img_id,
-                                     save_paths=save_paths,
-                                     file_log=file_log,
-                                     b_log=c_b_log,
-                                     p_log=c_p_log,
-                                     rejection_log=c_rj_log,
-                                     rois=rois)
+                    # If only one mode enabled and 1 rois, or if mode is not enabled.
+                    # Note: added filter condition, only process if there is one person in frame.
+                    if (not self.only_one_mode) or (len(rois) == 1):
+                        self._detect_img(img_path=_path,
+                                         img_id=img_id,
+                                         save_paths=save_paths,
+                                         file_log=file_log,
+                                         b_log=c_b_log,
+                                         p_log=c_p_log,
+                                         rejection_log=c_rj_log,
+                                         rois=rois)
             _count += 1
 
 
 if __name__ == "__main__":
-    f = Filter(img_path='/home/kits-adm/Datasets/flickr_epa/pics/',
-               meta_path='/home/kits-adm/Datasets/flickr_epa/filters/',
-               log_path=PURGE_SAFE)
+    f = Filter(img_path=os.path.join(BASE_PATH, 'pics/'),
+               meta_path=os.path.join(BASE_PATH, 'filters/'),
+               log_path=PURGE_SAFE,
+               # only_one=True
+               )
     f.write_all()
